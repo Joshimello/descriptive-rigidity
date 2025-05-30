@@ -12,6 +12,7 @@ This project provides a simple HTTP API that takes control point data and text p
 - REST API with JSON input/output
 - Support for humanoid character rigs
 - Realistic motion constraints
+- Multi-frame animation sequences
 
 ## Quick Start
 
@@ -40,7 +41,7 @@ The server will start on port 8080 (or the port specified in the `PORT` environm
 
 ### POST /generate-deformations
 
-Generate deformation amounts for control points based on a text description.
+Generate deformation amounts for control points based on a text description. Supports both single-frame and multi-frame animations.
 
 **Request Body:**
 ```json
@@ -57,16 +58,61 @@ Generate deformation amounts for control points based on a text description.
       "position": [-1.0, 2.0, 0.0]
     }
   ],
-  "prompt": "make the character wave"
+  "prompt": "make the character wave",
+  "length": 1
 }
 ```
 
+**Parameters:**
+- `control_points`: Array of control points with id, role, and position
+- `prompt`: Natural language description of the desired animation
+- `length`: Number of animation frames to generate (must be > 0)
+
 **Response:**
+Returns an array of deformation frames. Each frame contains deformations for each control point.
+
+```json
+[
+  {
+    "0": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "1": {"delta_x": 0.5, "delta_y": 1.0, "delta_z": 0.2}
+  }
+]
+```
+
+**Multi-frame Example:**
 ```json
 {
-  "0": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
-  "1": {"delta_x": 0.5, "delta_y": 1.0, "delta_z": 0.2}
+  "control_points": [...],
+  "prompt": "make the character walk forward",
+  "length": 4
 }
+```
+
+Response:
+```json
+[
+  {
+    "0": {"delta_x": 0.1, "delta_y": 0.0, "delta_z": 0.0},
+    "1": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "2": {"delta_x": -0.1, "delta_y": 0.0, "delta_z": 0.0}
+  },
+  {
+    "0": {"delta_x": 0.2, "delta_y": 0.0, "delta_z": 0.0},
+    "1": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "2": {"delta_x": -0.2, "delta_y": 0.0, "delta_z": 0.0}
+  },
+  {
+    "0": {"delta_x": 0.1, "delta_y": 0.0, "delta_z": 0.0},
+    "1": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "2": {"delta_x": -0.1, "delta_y": 0.0, "delta_z": 0.0}
+  },
+  {
+    "0": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "1": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0},
+    "2": {"delta_x": 0.0, "delta_y": 0.0, "delta_z": 0.0}
+  }
+]
 ```
 
 ## Integration Examples
@@ -82,7 +128,8 @@ async function generateDeformations(controlPoints, prompt) {
     },
     body: JSON.stringify({
       control_points: controlPoints,
-      prompt: prompt
+      prompt: prompt,
+      length: 1  // or specify number of frames for multi-frame animation
     })
   });
   
@@ -101,15 +148,41 @@ const controlPoints = [
 ];
 
 generateDeformations(controlPoints, "make the character wave")
-  .then(deformations => {
-    console.log('Generated deformations:', deformations);
+  .then(frames => {
+    console.log('Generated animation frames:', frames);
     // Apply deformations to your 3D model
-    Object.entries(deformations).forEach(([id, delta]) => {
-      // Apply delta_x, delta_y, delta_z to control point with id
-      applyDeformation(parseInt(id), delta.delta_x, delta.delta_y, delta.delta_z);
+    frames.forEach((deformations, frameIndex) => {
+      console.log(`Frame ${frameIndex}:`, deformations);
+      Object.entries(deformations).forEach(([id, delta]) => {
+        // Apply delta_x, delta_y, delta_z to control point with id
+        applyDeformation(parseInt(id), delta.delta_x, delta.delta_y, delta.delta_z);
+      });
     });
   })
   .catch(error => console.error('Error:', error));
+
+// Multi-frame animation example
+async function animateCharacter() {
+  const response = await fetch('http://localhost:8080/generate-deformations', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      control_points: controlPoints,
+      prompt: "make the character walk forward",
+      length: 8  // Generate 8 frames
+    })
+  });
+  
+  const frames = await response.json();
+  
+  // Play animation by applying frames sequentially
+  for (let i = 0; i < frames.length; i++) {
+    applyFrame(frames[i]);
+    await new Promise(resolve => setTimeout(resolve, 100)); // 100ms per frame
+  }
+}
 ```
 
 ### C++
@@ -149,7 +222,8 @@ public:
         // Prepare request data
         json requestData = {
             {"control_points", controlPoints},
-            {"prompt", prompt}
+            {"prompt", prompt},
+            {"length", 1}  // or specify frames for multi-frame animation
         };
         std::string jsonString = requestData.dump();
         
@@ -194,18 +268,23 @@ int main() {
         // Generate deformations
         json deformations = generator.generateDeformations(controlPoints, "make the character wave");
         
-        // Process results
-        std::cout << "Generated deformations:\n" << deformations.dump(2) << std::endl;
+        // Process results (now returns an array of frames)
+        std::cout << "Generated animation frames:\n" << deformations.dump(2) << std::endl;
         
-        // Apply deformations to your 3D model
-        for (auto& [id, delta] : deformations.items()) {
-            int controlPointId = std::stoi(id);
-            double deltaX = delta["delta_x"];
-            double deltaY = delta["delta_y"];
-            double deltaZ = delta["delta_z"];
+        // Apply each frame of deformations to your 3D model
+        for (size_t frameIndex = 0; frameIndex < deformations.size(); ++frameIndex) {
+            const auto& frame = deformations[frameIndex];
+            std::cout << "Frame " << frameIndex << ":\n";
             
-            // Apply to your 3D system
-            applyDeformation(controlPointId, deltaX, deltaY, deltaZ);
+            for (auto& [id, delta] : frame.items()) {
+                int controlPointId = std::stoi(id);
+                double deltaX = delta["delta_x"];
+                double deltaY = delta["delta_y"];
+                double deltaZ = delta["delta_z"];
+                
+                // Apply to your 3D system
+                applyDeformation(controlPointId, deltaX, deltaY, deltaZ);
+            }
         }
         
     } catch (const std::exception& e) {
@@ -257,11 +336,18 @@ This will send a sample request and display the response.
 
 ## Animation Prompts Examples
 
-- `"make the character wave"`
-- `"character jumps with arms up"`
-- `"bend forward to pick something up"`
-- `"raise left hand to the head"`
-- `"take a step forward with right leg"`
+Single-frame animations (static poses):
+- `"make the character wave"` (length: 1)
+- `"character jumps with arms up"` (length: 1)
+- `"bend forward to pick something up"` (length: 1)
+- `"raise left hand to the head"` (length: 1)
+
+Multi-frame animations (motion sequences):
+- `"make the character walk naturally forward"` (length: 8-12)
+- `"character does jumping jacks"` (length: 4-6)
+- `"character waves enthusiastically"` (length: 6-8)
+- `"character turns around"` (length: 4-8)
+- `"character sits down"` (length: 6-10)
 
 ## License
 
