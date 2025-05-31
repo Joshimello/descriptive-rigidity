@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 
@@ -31,15 +32,22 @@ type Deformation struct {
 	DeltaZ float64 `json:"delta_z"`
 }
 
+// Position struct for absolute positions from AI
+type Position struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+}
+
 type OpenAIResponse struct {
-	Frames []map[string]Deformation `json:"frames"`
+	Frames []map[string]Position `json:"frames"`
 }
 
 type ResponsePayload []map[int]Deformation
 
 // System prompt for GPT-4o-mini
 const systemPrompt = `
-You are an animation generation assistant integrated with an As-Rigid-As-Possible (ARAP) deformation system. Your task is to generate a JSON array containing multiple frames of deformation amounts for each control point of a 3D character model based on a user-provided text prompt, control point data, and animation length. The deformation amounts represent changes in position (delta_x, delta_y, delta_z) for each control point to achieve the described animation while preserving ARAP rigidity constraints (minimize stretching, prioritize local rigidity).
+You are an animation generation assistant integrated with an As-Rigid-As-Possible (ARAP) deformation system. Your task is to generate a JSON array containing multiple frames of absolute positions for each control point of a 3D character model based on a user-provided text prompt, control point data, and animation length. You will generate the new positions for each control point to achieve the described animation while preserving ARAP rigidity constraints (minimize stretching, prioritize local rigidity).
 
 **Input**:
 - **Control Points**: A list of control points with id (integer), role (e.g., "left leg", "right arm", "head"), and position (x, y, z coordinates as floats).
@@ -49,10 +57,10 @@ You are an animation generation assistant integrated with an As-Rigid-As-Possibl
 
 **Output**:
 - A JSON array where each element represents one frame of animation.
-- Each frame is a JSON object where each key is a control point id (as a string), and the value is an object with delta_x, delta_y, delta_z (deformation amounts in the same units as the input positions).
+- Each frame is a JSON object where each key is a control point id (as a string), and the value is an object with x, y, z (absolute positions in the same units as the input positions).
 - The frames should create a smooth animation sequence for the described motion (e.g., for "walk", alternate leg movements; for "wave", arm going up and down).
-- Ensure deformations are plausible for a humanoid character and respect ARAP constraints (small, localized changes for non-moving parts; smooth transitions for moving parts).
-- If the prompt affects only specific control points (e.g., "wave" primarily involves the arm), set deformation amounts for unaffected points (e.g., legs, head) to zero or minimal values.
+- Ensure positions are plausible for a humanoid character and respect ARAP constraints (small, localized changes for non-moving parts; smooth transitions for moving parts).
+- If the prompt affects only specific control points (e.g., "wave" primarily involves the arm), keep unaffected points (e.g., legs, head) at their original positions or with minimal changes.
 - For cyclical animations (like walking), ensure the sequence can loop smoothly by making the last frame transition well back to the first frame.
 
 **Example Input**:
@@ -69,29 +77,29 @@ You are an animation generation assistant integrated with an As-Rigid-As-Possibl
 **Example Output**:
 [
   {
-    "0": {"delta_x": 0, "delta_y": 0, "delta_z": 0},
-    "1": {"delta_x": 0.2, "delta_y": 0.5, "delta_z": 0.1},
-    "2": {"delta_x": 0, "delta_y": 0, "delta_z": 0}
+    "0": {"x": 1, "y": 2, "z": 0},
+    "1": {"x": -0.8, "y": 2.5, "z": 0.1},
+    "2": {"x": 0, "y": 7, "z": 0}
   },
   {
-    "0": {"delta_x": 0, "delta_y": 0, "delta_z": 0},
-    "1": {"delta_x": 0.5, "delta_y": 1.0, "delta_z": 0.2},
-    "2": {"delta_x": 0, "delta_y": 0, "delta_z": 0}
+    "0": {"x": 1, "y": 2, "z": 0},
+    "1": {"x": -0.5, "y": 3.0, "z": 0.2},
+    "2": {"x": 0, "y": 7, "z": 0}
   },
   {
-    "0": {"delta_x": 0, "delta_y": 0, "delta_z": 0},
-    "1": {"delta_x": 0.2, "delta_y": 0.3, "delta_z": 0.1},
-    "2": {"delta_x": 0, "delta_y": 0, "delta_z": 0}
+    "0": {"x": 1, "y": 2, "z": 0},
+    "1": {"x": -0.8, "y": 2.3, "z": 0.1},
+    "2": {"x": 0, "y": 7, "z": 0}
   }
 ]
 
 **Instructions**:
 1. Interpret the prompt to identify which control points are involved in the animation and the type of motion.
 2. Generate the specified number of frames that create a smooth animation sequence.
-3. Keep deformations small and realistic (e.g., within ±1 unit unless specified) to maintain ARAP rigidity.
-4. Set deformation amounts to zero for control points unaffected by the animation.
+3. Keep position changes small and realistic (e.g., within ±1 unit from original unless specified) to maintain ARAP rigidity.
+4. Keep unaffected control points at their original positions.
 5. For cyclical motions, ensure smooth looping by making frame transitions natural.
-6. Output only the JSON array with deformation frames, no additional text.
+6. Output only the JSON array with position frames, no additional text.
 `
 
 // Handler for the /generate-deformations endpoint
@@ -143,14 +151,14 @@ func generateDeformations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Failed to serialize input", http.StatusInternalServerError)
 		return
 	}
-	
+
 	log.Printf("Sending payload to OpenAI: %s", string(inputJSON))
 
 	// Call GPT-4o-mini
 	resp, err := client.CreateChatCompletion(
 		context.Background(),
 		openai.ChatCompletionRequest{
-			Model: openai.GPT4oMini,
+			Model: openai.GPT4Dot1,
 			Messages: []openai.ChatCompletionMessage{
 				{
 					Role:    openai.ChatMessageRoleSystem,
@@ -174,7 +182,7 @@ func generateDeformations(w http.ResponseWriter, r *http.Request) {
 	// Parse OpenAI response
 	responseContent := resp.Choices[0].Message.Content
 	log.Printf("OpenAI Response Content: %s", responseContent)
-	
+
 	var openaiResp OpenAIResponse
 	if err := json.Unmarshal([]byte(responseContent), &openaiResp); err != nil {
 		log.Printf("Failed to parse OpenAI response: %v", err)
@@ -182,18 +190,34 @@ func generateDeformations(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, fmt.Sprintf("Failed to parse OpenAI response: %v", err), http.StatusInternalServerError)
 		return
 	}
-	
-	// Convert string keys to integers and create deformations array
+
+	// Create a map of original positions for delta calculation
+	originalPositions := make(map[int][]float64)
+	for _, cp := range payload.ControlPoints {
+		originalPositions[cp.ID] = cp.Position
+	}
+
+	// Convert string keys to integers and calculate deltas from absolute positions
 	deformations := make(ResponsePayload, len(openaiResp.Frames))
 	for frameIndex, frame := range openaiResp.Frames {
 		frameMap := make(map[int]Deformation)
-		for idStr, deformation := range frame {
+		for idStr, position := range frame {
 			id := 0
 			if _, err := fmt.Sscanf(idStr, "%d", &id); err != nil {
 				log.Printf("Invalid ID format: %s", idStr)
 				continue
 			}
-			frameMap[id] = deformation
+
+			// Calculate delta from original position
+			originalPos := originalPositions[id]
+			if len(originalPos) >= 3 {
+				delta := Deformation{
+					DeltaX: math.Round((position.X-originalPos[0])*100) / 100,
+					DeltaY: math.Round((position.Y-originalPos[1])*100) / 100,
+					DeltaZ: math.Round((position.Z-originalPos[2])*100) / 100,
+				}
+				frameMap[id] = delta
+			}
 		}
 		deformations[frameIndex] = frameMap
 	}
